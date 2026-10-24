@@ -1,0 +1,703 @@
+# UNDERTONE 1.0 -- a psinco. production
+# (C) 2026 Dawid Blachowski. MIT licence: see LICENSE.
+# Inspired by Tony Conrad's The Flicker (1966). Nothing of the film is used.
+#
+# Readable source for tools/bas65pp.py, which numbers the lines, puts in the line numbers of the
+# labels, swaps the long names for BASIC names and appends the engine as DATA lines.
+# Names in lower case belong to this file; BASIC keywords and plain BASIC names are upper case.
+# Screens are drawn with T@& (screen codes) and C@& (colour codes), not PRINT, so nothing
+# scrolls; PRINT only clears rows, from column 1 to 38.
+#
+# Palette entries of the text bank (all put back on quit):
+#   0 black, 1 white, 3 cyan, 12 grey: never changed
+#   2   red; on the warning pages it blinks red and white
+#   4-10, 13   the eight colours of the frames
+#   11  the dot of psinco.      14  text that fades
+#   15  highlighted text that fades; on How it runs, the yellow of START
+#   254 border and background; the engine flickers it
+# Other palette banks: the engine's two table banks are saved first and put back on quit.
+# Memory: the engine sits at $1800-$1E34 and keeps its state at $1E80-$1ED3 (bank 0, the area
+# the User's Guide keeps free for programs), so the BASIC program can grow freely.
+# Keys: Q quits from every screen, the flicker included; RETURN skips the intro.
+
+#import engine.asm
+#engine engine.bin 30000
+
+#define SID_R $FFD3420
+#define SID_L $FFD3460
+#define SR_F1 $FFD3421
+#define SL_F1 $FFD3461
+#define SR_C1 $FFD3424
+#define SL_C1 $FFD3464
+#define SR_C2 $FFD342B
+#define SL_C2 $FFD346B
+#define SR_C3 $FFD3432
+#define SL_C3 $FFD3472
+
+# ---- machine state, saved first and put back on quit ----
+#var d070 Q0
+#var d070t QT
+#var tbank TB
+#var bank BK
+#var border0 OB
+#var screen0 OS
+#var width0 OW
+#var height0 OH
+#var tablesf TF
+#var mixf MF
+#var glyphf GD
+#var palf PF
+#var modef MD
+#var sv% SV%
+#var tp% TP%
+#var gs% GS%
+#var mix MX
+#var mixreg XR
+# ---- frame clock and input ----
+#var fc FC
+#var flast FL
+#var f1 F1
+#var f2 F2
+#var key$ K$
+#var ik IK
+#var jprev JP
+#var jnow JN
+# ---- palette ----
+#var ns% NS%
+#var pn PN
+#var pr R1
+#var pg G1
+#var pb B1
+#var pv PV
+#var fm% FM%
+#var qr% QR%
+#var qg% QG%
+#var qb% QB%
+#var mp MP
+#var mv MV
+#var mt MT
+#var hr% HR%
+#var hg% HG%
+#var hb% HB%
+#var nr% NR%
+#var ng% NG%
+#var nb% NB%
+# ---- drawing ----
+#var ft% FT%
+#var fl$ FL$
+#var sq% SQ%
+#var bt$ BT$
+#var bx BX
+#var by BY
+#var bc BC
+#var tx TX
+#var ty TY
+#var tc TC
+#var th TH
+#var tx$ T$
+#var x0 X0
+#var y0 Y0
+#var x1 X1
+#var y1 Y1
+#var blank$ BL$
+#var pu_i I2
+#var pu_x U
+#var pu_c Z
+#var pu_col C
+#var bi_i I3
+#var bi_j J3
+#var bi_x X
+#var bi_l L
+#var bi_n N3
+#var bi_m M3
+#var mq_i I4
+#var mq_j J4
+#var mq_n N4
+#var ff_i I5
+#var fr_p P
+#var sc_i I6
+# ---- texts ----
+#var lines$ L$
+#var lcount LC
+#var lfirst LP
+#var page PG
+#var lens$ LN$
+#var palname$ NP$
+#var ptext$ DT$
+#var notes$ NT$
+# ---- screens ----
+#var t0 T0
+#var bv BV
+#var cs CS
+#var hint HI
+#var sk SK
+#var sl SL
+#var si SI
+#var se SE
+#var nc NC
+#var crack CK
+# ---- settings and the run ----
+#var soft SA
+#var tick TK
+#var hum HU
+#var palette PM
+#var length LI
+#var kv KV
+#var kf KF
+#var typed$ TY$
+#var exitc XC
+#var frames FR
+#var inc IC
+#var hz HZ
+#var mins MN
+#var secs SC
+#var missed MS
+#var time$ TM$
+#var hz$ HZ$
+#var e1 E1
+#var e2 E2
+
+#line 10
+  REM UNDERTONE 1.0 - A PSINCO. PRODUCTION
+  REM (C) 2026 DAWID BLACHOWSKI. MIT LICENCE: SEE THE FILE LICENSE.
+  REM INSPIRED BY TONY CONRAD'S THE FLICKER (1966). NOTHING OF IT IS USED.
+  BANK 128: d070=PEEK($FFD3070): border0=PEEK($FFD3020): screen0=PEEK($FFD3021)
+  TRAP @trap: tablesf=0: mixf=0: glyphf=0: palf=0: modef=0
+  IF PEEK($FFD306F) AND 128 THEN PRINT "UNDERTONE NEEDS PAL, 50 HZ.": END
+  tbank=(d070 AND 48)/16: d070t=(d070 AND 63) OR (tbank*64)
+  width0=RWINDOW(2): height0=RWINDOW(3)
+  J=0: FOR I=0 TO 3: IF I<>tbank THEN J=J+1: bank(J)=I
+  NEXT
+  modef=1: PRINT CHR$(27);"4";: IF RWINDOW(2)<>40 THEN PRINT CHR$(27);"X";
+  IF RWINDOW(2)<>40 OR RWINDOW(3)<>25 THEN GOTO @nomode
+  PRINT CHR$(147);CHR$(11);CHR$(142);: CURSOR OFF
+  DIM ns%(255): FOR I=0 TO 255: ns%(I)=(I AND 15)*16+INT(I/16): NEXT
+  DIM tp%(50): POKE $FFD3070,d070t: N=0
+  FOR I=0 TO 16: E=I: IF I=16 THEN E=254
+  tp%(N)=PEEK($FFD3100+E): tp%(N+1)=PEEK($FFD3200+E)
+  tp%(N+2)=PEEK($FFD3300+E): N=N+3: NEXT: palf=1
+  pn=254: pv=0: GOSUB @grey: POKE $FFD3020,254: POKE $FFD3021,254
+  RESTORE ENGINE_LINE: cs=0
+  FOR I=0 TO ENGINE_BYTES-1: READ V: POKE $1800+I,V: cs=cs+V: NEXT
+  IF cs<>ENGINE_SUM THEN GOTO @badengine
+  DIM sv%(1535): GOSUB @savebanks: GOSUB @tables: GOSUB @setup
+@intro
+  GOSUB @card: IF ik=3 THEN GOTO @warning
+  GOSUB @title: IF ik=3 THEN GOTO @warning
+  GOSUB @story
+
+# ---------------- the warning: two pages, never skipped ----------------
+#line 1000
+@warning
+  PRINT CHR$(147);: A=1: GOSUB @marqcols: mp=0: mv=256: GOSUB @marqset
+  x0=0: y0=0: x1=39: y1=24: GOSUB @frame
+  pn=2: pr=255: pg=0: pb=0: GOSUB @setcol
+  bt$="WARNING": bx=6: by=1: bc=2: GOSUB @bigtext
+  FOR page=6 TO 7: GOSUB @warnpage: NEXT
+  POKE $FFD3102,tp%(6): POKE $FFD3202,tp%(7): POKE $FFD3302,tp%(8)
+  GOTO @settings
+@warnpage
+  N=lcount(page): A=lfirst(page): tc=1: th=1: tx=2
+  FOR L=0 TO N-1: tx$=lines$(A+L): ty=5+L: GOSUB @puts: NEXT
+  tx$=MID$(STR$(page-5),2)+"/2": tx=35: ty=23: tc=12: GOSUB @puts
+  GOSUB @flushin: t0=fc: hint=0
+  DO: GOSUB @tick: T=fc-t0
+  pn=2: pr=255: pg=0: pb=0: IF MOD(INT(T/25),2) THEN pg=255: pb=255
+  GOSUB @setcol
+  IF T>=100 AND hint=0 THEN tx$="PRESS A KEY": tx=2: GOSUB @puts: hint=1
+  GOSUB @poll: IF T<100 THEN ik=0
+  LOOP UNTIL ik
+  FOR L=5 TO 23: CURSOR 1,L: PRINT blank$;: NEXT: RETURN
+
+# ---------------- how it runs: the settings, and START ----------------
+#line 1500
+@settings
+  soft=1: typed$="": PRINT CHR$(147);: A=0: GOSUB @marqcols
+  mp=0: mv=256: GOSUB @marqset: mt=fc: x0=0: y0=0: x1=39: y1=24: GOSUB @frame
+  pn=15: pr=255: pg=220: pb=0: GOSUB @setcol
+  tc=3: th=3: ty=2: tx$="H O W   I T   R U N S": GOSUB @putc
+  GOSUB @runtext: tc=1: th=1: tx=2: ty=6
+  tx$="IT STARTS SLOW, SPEEDS UP AND ENDS": GOSUB @puts
+  ty=7: tx$="ON ITS OWN. LOOK AT THE CENTRE.": GOSUB @puts
+  FOR W=1 TO 5: GOSUB @setline: NEXT: GOSUB @noteline
+  tc=12: th=12: tx=2: ty=17
+  tx$="PRESS 1 TO 5 TO CHANGE A SETTING.": GOSUB @puts
+  tc=1: th=15: ty=18: tx$="ANY KEY STOPS THE FLICKER AT ONCE.": GOSUB @puts
+  ty=19: tx$="TYPE [START] TO BEGIN. TYPING IT MEANS": GOSUB @puts
+  ty=20: tx$="YOU ACCEPT THE WARNING.": GOSUB @puts
+  GOSUB @inputline: GOSUB @flushin
+@set_loop
+  GOSUB @tick: GOSUB @marquee: GET key$: IF key$="" THEN GOTO @set_loop
+  A=ASC(key$): IF A>192 AND A<219 THEN A=A-128
+  IF A=81 THEN GOTO @quit
+  IF A>48 AND A<54 THEN W=A-48: GOSUB @toggle: GOTO @set_loop
+  IF A=20 THEN IF LEN(typed$) THEN typed$=LEFT$(typed$,LEN(typed$)-1): GOSUB @inputline
+  IF A<65 OR A>90 THEN GOTO @set_loop
+  key$=CHR$(A)
+  IF key$=MID$("START",LEN(typed$)+1,1) THEN typed$=typed$+key$: ELSE typed$=""
+  IF typed$="" AND key$="S" THEN typed$="S"
+  IF typed$<>"START" THEN GOSUB @inputline: GOTO @set_loop
+  GOTO @run
+@toggle
+  IF W=1 THEN soft=1-soft
+  IF W=2 THEN tick=1-tick
+  IF W=3 THEN hum=1-hum
+  # palette codes are the engine's (0 black and white, 1 both in turns, 2 colour wheel);
+  # the key steps them in the menu's order: black and white, colour wheel, both
+  IF W=4 THEN palette=MOD(palette+2,3): GOSUB @runtext
+  IF W=5 THEN length=MOD(length+1,3)
+  GOSUB @setline: IF W=1 OR W=4 THEN GOTO @noteline
+  RETURN
+@setline
+  ty=8+W: tx=2: tc=1: th=3: ON W GOSUB @set1,@set2,@set3,@set4,@set5
+  GOTO @puts
+@set1
+  tx$="1   INTENSITY   [SOFT]": IF soft=0 THEN tx$="1   INTENSITY   [FULL]"
+  RETURN
+@set2
+  tx$="2   TICK        [ON ]": IF tick=0 THEN tx$="2   TICK        [OFF]"
+  RETURN
+@set3
+  tx$="3   HUM         [ON ]": IF hum=0 THEN tx$="3   HUM         [OFF]"
+  RETURN
+@set4
+  tx$="4   PALETTE     ["+LEFT$(palname$(palette)+blank$,20)+"]": RETURN
+@set5
+  tx$="5   LENGTH      ["+lens$(length)+"]": RETURN
+@runtext
+  # the two lines that say what the palette shows
+  tc=1: th=1: tx=2: ty=4: tx$=LEFT$(ptext$(2*palette)+blank$,34): GOSUB @puts
+  ty=5: tx$=LEFT$(ptext$(2*palette+1)+blank$,34): GOTO @puts
+@noteline
+  # what the intensity means for this palette
+  tc=12: th=12: tx=2: ty=15: tx$=LEFT$(notes$(soft+2*SGN(palette))+blank$,33)
+  GOTO @puts
+@inputline
+  tc=1: th=15: tx=2: ty=22: tx$="> ["+typed$+"]      ": GOSUB @puts
+  T@&(4+LEN(typed$),22)=100: C@&(4+LEN(typed$),22)=1: RETURN
+
+# ---------------- the run ----------------
+#line 2000
+@run
+  PRINT CHR$(147);: mv=0: GOSUB @marqset
+  POKE P_INCL,0: POKE P_INCH,16: POKE P_SOFT,soft: POKE P_SOUND,tick+2*hum
+  POKE P_PAL,palette: POKE P_K,kv(length): POKE P_BT1,bank(1): POKE P_BT2,bank(2)
+  POKE P_ECHO,1: POKE P_MOD,1: POKE P_KFL,kf AND 255: POKE P_KFH,INT(kf/256)
+  POKE P_VS,10: POKE P_VT,8: POKE P_EDLY,3
+  GOSUB @hardpan: POKE $FFD3020,0: POKE $FFD3021,0
+  GOSUB @flushin: t0=fc
+  DO: GOSUB @tick: GET key$: IF key$="Q" OR key$=CHR$(209) THEN GOTO @quit
+  LOOP UNTIL fc-t0>=50
+  SYS $1800
+  GOSUB @softpan: pn=254: pv=0: GOSUB @grey: POKE $FFD3020,254: POKE $FFD3021,254
+  # Q, the key that stopped the flicker, quits as it does everywhere else
+  IF PEEK(P_EXIT)=81 OR PEEK(P_EXIT)=113 THEN GOTO @quit
+
+# ---------------- the end ----------------
+#line 2500
+@theend
+  frames=PEEK(D_FR0)+256*PEEK(D_FR1)+65536*PEEK(D_FR2): exitc=PEEK(P_EXIT)
+  inc=PEEK(P_INCL)+256*PEEK(P_INCH): hz=INT(500*inc/65536+.5)/10: missed=PEEK(D_MISS)
+  mins=INT(frames/3000): secs=INT(frames/50)-60*mins: hz$=MID$(STR$(hz),2)
+  time$=MID$(STR$(secs),2)+" S": IF mins THEN time$=MID$(STR$(mins),2)+" MIN "+time$
+  PRINT CHR$(147);: A=0: GOSUB @marqcols: mp=0: mv=256: GOSUB @marqset: mt=fc
+  x0=0: y0=0: x1=39: y1=24: GOSUB @frame
+  pn=14: pv=0: GOSUB @grey: pn=11: GOSUB @grey
+  bt$="THE END": bx=8: by=2: bc=14: GOSUB @bigtext: tc=1: th=3: ty=6
+  IF exitc=0 THEN tx$="YOU WATCHED "+time$+".": GOSUB @putc
+  IF exitc=0 THEN ty=7: tx$="IT REACHED 25 HZ AND ENDED.": GOSUB @putc
+  IF exitc THEN tx$="YOU STOPPED IT AT "+hz$+" HZ,": GOSUB @putc
+  IF exitc THEN ty=7: tx$="AFTER "+time$+".": GOSUB @putc
+  ty=9: tx$="UNDERTONE 1.0, 2026": GOSUB @putc
+  ty=10: tx$="BY DAWID BLACHOWSKI": GOSUB @putc
+  ty=11: tx$="WITH CLAUDE, ANTHROPIC'S AI": GOSUB @putc
+  FOR I=0 TO 5: T@&(16+I,12)=129+I: C@&(16+I,12)=1: NEXT
+  T@&(22,12)=46: C@&(22,12)=11
+  ty=13: tx$="A SOFTWARE ATELIER FROM LUXEMBOURG": GOSUB @putc
+  ty=15: tx$="INSPIRED BY TONY CONRAD'S": GOSUB @putc
+  ty=16: tx$="[THE FLICKER] (1966).": GOSUB @putc
+  ty=17: tx$="NOTHING OF THE FILM IS USED.": GOSUB @putc
+  tc=12: th=12: ty=19: tx$="(C) 2026 DAWID BLACHOWSKI": GOSUB @putc
+  ty=20: tx$="MIT LICENCE: FREE TO USE, CHANGE": GOSUB @putc
+  ty=21: tx$="AND SHARE, WITH THIS NOTICE.": GOSUB @putc
+  IF missed THEN ty=22: tx$="FRAMES MISSED:"+STR$(missed): GOSUB @putc
+  tc=1: th=3: tx=12: ty=23: tx$="[R] AGAIN   [Q] QUIT": GOSUB @puts
+  GOSUB @flushin: t0=fc
+@end_loop
+  GOSUB @tick: GOSUB @marquee: T=fc-t0: V=T/25: IF V>1 THEN V=1
+  pn=14: pv=INT(255*V): GOSUB @grey
+  H=MOD(INT(T/3),64): pn=11: pr=hr%(H): pg=hg%(H): pb=hb%(H): GOSUB @setcol
+  GET key$: IF key$="" THEN GOTO @end_loop
+  A=ASC(key$): IF A>192 AND A<219 THEN A=A-128
+  IF A=82 THEN GOTO @settings
+  IF A<>81 THEN GOTO @end_loop
+@quit
+  GOSUB @cleanup: DO: GET key$: LOOP UNTIL key$="": END
+
+# ---------------- leaving: everything back as it was ----------------
+#line 3000
+@cleanup
+  TRAP: GOSUB @sidclr: SOUND CLR: IF mixf THEN GOSUB @softpan
+  IF glyphf THEN GOSUB @restglyphs
+  IF tablesf THEN GOSUB @restbanks
+  IF palf THEN GOSUB @restpal
+  POKE $FFD3070,d070: POKE $FFD3020,border0: POKE $FFD3021,screen0
+  PRINT CHR$(142);CHR$(12);CHR$(147);: IF modef=0 THEN RETURN
+  IF width0=80 AND height0=50 THEN PRINT CHR$(27);"5";: RETURN
+  IF width0=80 THEN PRINT CHR$(27);"8";
+  RETURN
+@trap
+  e1=ER: e2=EL: GOSUB @cleanup: IF e1=30 THEN END
+  PRINT "UNDERTONE STOPPED: ";ERR$(e1);" IN LINE";e2: END
+@nomode
+  GOSUB @cleanup: PRINT "UNDERTONE NEEDS THE 40 X 25 TEXT SCREEN.": END
+@badengine
+  GOSUB @cleanup: PRINT "ENGINE DATA DAMAGED: CHECKSUM";cs: END
+@restpal
+  POKE $FFD3070,d070t: N=0: FOR I=0 TO 16: E=I: IF I=16 THEN E=254
+  POKE $FFD3100+E,tp%(N): POKE $FFD3200+E,tp%(N+1)
+  POKE $FFD3300+E,tp%(N+2): N=N+3: NEXT: RETURN
+@restglyphs
+  FOR I=0 TO 47: POKE $FF7E408+I,gs%(I): NEXT: glyphf=0: RETURN
+@savebanks
+  FOR W=1 TO 2: POKE $FFD3070,(d070 AND 63) OR (bank(W)*64)
+  FOR I=0 TO 255: J=(W-1)*768+I*3
+  sv%(J)=PEEK($FFD3100+I): sv%(J+1)=PEEK($FFD3200+I)
+  sv%(J+2)=PEEK($FFD3300+I): NEXT I: NEXT W: POKE $FFD3070,d070t: tablesf=1: RETURN
+@restbanks
+  FOR W=1 TO 2: POKE $FFD3070,(d070 AND 63) OR (bank(W)*64)
+  FOR I=0 TO 255: J=(W-1)*768+I*3
+  POKE $FFD3100+I,sv%(J): POKE $FFD3200+I,sv%(J+1): POKE $FFD3300+I,sv%(J+2)
+  NEXT I: NEXT W: POKE $FFD3070,d070t: RETURN
+@hardpan
+  IF mixf THEN RETURN
+  FOR J=0 TO 3: R=mixreg(J): POKE $FFD36F4,R: mix(J*2)=PEEK($FFD36F5)
+  POKE $FFD36F4,R+1: mix(J*2+1)=PEEK($FFD36F5): NEXT J: mixf=1
+  FOR J=0 TO 3: R=mixreg(J): POKE $FFD36F4,R: POKE $FFD36F5,0
+  POKE $FFD36F4,R+1: POKE $FFD36F5,0: NEXT J: RETURN
+@softpan
+  IF mixf=0 THEN RETURN
+  FOR J=0 TO 3: R=mixreg(J): POKE $FFD36F4,R: POKE $FFD36F5,mix(J*2)
+  POKE $FFD36F4,R+1: POKE $FFD36F5,mix(J*2+1): NEXT J: mixf=0: RETURN
+
+# ---------------- the opening card: a psinco. production ----------------
+#line 3500
+@card
+  PRINT CHR$(147);CHR$(14);: pn=254: pv=0: GOSUB @grey
+  pn=14: GOSUB @grey: pn=11: GOSUB @grey: tc=14: th=11: tx=0: ty=12
+  tx$="A   P S I N C O [.]   P R O D U C T I O N": GOSUB @puts
+  GOSUB @flushin: t0=fc
+  DO: GOSUB @tick: T=fc-t0: bv=255: A=0
+  IF T<25 THEN bv=INT(255*T/25)
+  IF T>225 THEN bv=INT(255*(250-T)/25): IF bv<0 THEN bv=0
+  IF T>=25 AND T<75 THEN A=(T-25)/50
+  IF T>=75 AND T<175 THEN A=1
+  IF T>=175 AND T<225 THEN A=(225-T)/50
+  pn=254: pv=bv: GOSUB @grey: pn=14: pv=INT(bv*(1-A)): GOSUB @grey
+  H=MOD(INT(T/3),64): pn=11: pr=INT(bv*(1-A)+hr%(H)*A)
+  pg=INT(bv*(1-A)+hg%(H)*A): pb=INT(bv*(1-A)+hb%(H)*A)
+  GOSUB @setcol: GOSUB @poll
+  LOOP UNTIL T>=250 OR ik
+  pn=254: pv=0: GOSUB @grey: PRINT CHR$(147);CHR$(142);: RETURN
+
+# ---------------- the title: UNDERTONE strikes like a neon sign ----------------
+#line 4000
+@title
+  PRINT CHR$(147);: GOSUB @sidclr: GOSUB @titlesnd: pr=0: pg=0: pb=0: GOSUB @fillframe
+  pn=14: pr=28: pg=26: pb=34: GOSUB @setcol
+  x0=0: y0=8: x1=38: y1=16: GOSUB @frame
+  bt$="UNDERTONE": bx=2: by=11: bc=14: GOSUB @bigtext
+  si=0: se=-1: crack=0: GOSUB @flushin: t0=fc
+  DO: GOSUB @tick: T=fc-t0-15
+  IF crack THEN POKE SR_C1,128: POKE SL_C1,128: crack=0
+  IF si<6 THEN IF T>=sk(si) THEN GOSUB @strike
+  IF T>=275 AND si=6 THEN GOSUB @humoff
+  V=1: IF T>=275 THEN V=(325-T)/50: IF V<0 THEN V=0
+  IF T<se THEN GOSUB @titlelit: ELSE GOSUB @titledark
+  GOSUB @poll
+  LOOP UNTIL T>=365 OR ik
+  GOSUB @sidclr: pr=0: pg=0: pb=0: GOSUB @fillframe: pn=14: GOSUB @setcol
+  PRINT CHR$(147);: RETURN
+@strike
+  se=sk(si)+sl(si): si=si+1: nc=INT(RND(1)*4): N=16+INT(RND(1)*48)
+  POKE SR_F1,N: POKE SL_F1,N
+  POKE SR_C1,129: POKE SL_C1,129: crack=1
+  IF si<6 THEN RETURN
+  POKE SR_C2,65: POKE SL_C2,65
+  POKE SR_C3,17: POKE SL_C3,17: RETURN
+@humoff
+  POKE SR_C2,64: POKE SL_C2,64
+  POKE SR_C3,16: POKE SL_C3,16: si=7: RETURN
+@titlelit
+  A=nc: F=0: IF T>=125 THEN W=INT((T-125)/50): F=(T-125)/50-W: A=(nc+W) AND 3
+  B=(A+1) AND 3: pr=INT(V*(nr%(A)*(1-F)+nr%(B)*F))
+  pg=INT(V*(ng%(A)*(1-F)+ng%(B)*F)): pb=INT(V*(nb%(A)*(1-F)+nb%(B)*F))
+  GOSUB @fillframe
+  pn=14: pr=INT(255*V): pg=INT(248*V): pb=INT(235*V): GOTO @setcol
+@titledark
+  pr=0: pg=0: pb=0: GOSUB @fillframe
+  pn=14: pr=INT(28*V): pg=INT(26*V): pb=INT(34*V): GOTO @setcol
+@titlesnd
+  POKE SID_R,0,40,0,0,128,1,0: POKE SID_L,0,40,0,0,128,1,0
+  POKE SID_R+7,168,6,0,2,64,153,138: POKE SID_L+7,168,6,0,2,64,153,138
+  POKE SID_R+14,84,3,0,0,16,153,138: POKE SID_L+14,84,3,0,0,16,153,138
+  POKE SID_R+21,0,20,38,28: POKE SID_L+21,0,20,38,28: RETURN
+@sidclr
+  FOR sc_i=0 TO 24: POKE SID_R+sc_i,0: POKE SID_L+sc_i,0: NEXT: RETURN
+
+# ---------------- the story: five pages ----------------
+#line 4500
+@story
+  A=0: GOSUB @marqcols: mp=0: mv=0: GOSUB @marqset: mt=fc
+  x0=0: y0=0: x1=39: y1=24: GOSUB @frame
+  FOR page=1 TO 5: GOSUB @storypage: IF ik=3 THEN page=5
+  NEXT
+  t0=fc: DO: GOSUB @tick: mv=INT(256*(1-(fc-t0)/15)): IF mv<0 THEN mv=0
+  GOSUB @marqset: LOOP UNTIL mv=0
+  PRINT CHR$(147);: RETURN
+@storypage
+  N=lcount(page): A=lfirst(page): ty=12-INT((2*N-1)/2): tc=14: th=15
+  pn=14: pv=0: GOSUB @grey: pn=15: GOSUB @grey
+  FOR L=0 TO N-1: tx$=lines$(A+L): GOSUB @putc: ty=ty+2: NEXT
+  tx$=MID$(STR$(page),2)+"/5": tx=35: ty=23: tc=12: GOSUB @puts
+  GOSUB @flushin: t0=fc
+  DO: GOSUB @tick: V=(fc-t0)/20: IF V>1 THEN V=1
+  pn=14: pr=INT(235*V): pg=pr: pb=INT(240*V): GOSUB @setcol
+  pn=15: pr=0: pg=INT(220*V): pb=INT(255*V): GOSUB @setcol
+  IF mv<256 THEN mv=INT(256*V): GOSUB @marqset
+  GOSUB @marquee: GOSUB @poll
+  LOOP UNTIL ik
+  t0=fc: DO: GOSUB @tick: V=1-(fc-t0)/10: IF V<0 THEN V=0
+  pn=14: pr=INT(235*V): pg=pr: pb=INT(240*V): GOSUB @setcol
+  pn=15: pr=0: pg=INT(220*V): pb=INT(255*V): GOSUB @setcol: GOSUB @marquee
+  LOOP UNTIL V=0
+  FOR L=1 TO 23: CURSOR 1,L: PRINT blank$;: NEXT: RETURN
+
+# ---------------- drawing ----------------
+#line 5000
+@tick
+  f1=PEEK($FFD37FA): DO WHILE PEEK($FFD37FA)=f1: LOOP
+  f2=PEEK($FFD37FA): fc=fc+((f2-flast) AND 255): flast=f2: RETURN
+@poll
+  # Q quits from every screen; RETURN skips the intro
+  GET key$: ik=0: IF key$<>"" THEN ik=1: IF key$=CHR$(13) THEN ik=3
+  IF key$="Q" OR key$=CHR$(209) THEN GOTO @quit
+  jnow=JOY(3) AND 128: IF jnow AND jprev=0 THEN ik=2
+  jprev=jnow: RETURN
+@flushin
+  DO: GET key$: IF key$="Q" OR key$=CHR$(209) THEN GOTO @quit
+  LOOP UNTIL key$=""
+  jprev=JOY(3) AND 128: ik=0: flast=PEEK($FFD37FA): RETURN
+@setcol
+  POKE $FFD3100+pn,ns%(pr): POKE $FFD3200+pn,ns%(pg)
+  POKE $FFD3300+pn,ns%(pb): RETURN
+@grey
+  pr=pv: pg=pv: pb=pv: GOTO @setcol
+@fillframe
+  FOR ff_i=0 TO 7: pn=fm%(ff_i): GOSUB @setcol: NEXT: RETURN
+@marqcols
+  IF A=0 THEN RESTORE @d_mq0: ELSE RESTORE @d_mq1
+  FOR I=0 TO 7: READ qr%(I),qg%(I),qb%(I): NEXT: RETURN
+@marquee
+  IF fc-mt<6 THEN RETURN
+  mt=fc: mp=(mp+1) AND 7
+@marqset
+  FOR mq_i=0 TO 7: mq_j=(mq_i-mp) AND 7: mq_n=fm%(mq_i)
+  POKE $FFD3100+mq_n,ns%(qr%(mq_j)*mv/256): POKE $FFD3200+mq_n,ns%(qg%(mq_j)*mv/256)
+  POKE $FFD3300+mq_n,ns%(qb%(mq_j)*mv/256): NEXT: RETURN
+@frame
+  fr_p=0: FOR X=x0 TO x1: T@&(X,y0)=64: C@&(X,y0)=fm%(fr_p AND 7): fr_p=fr_p+1: NEXT
+  FOR Y=y0+1 TO y1-1: T@&(x1,Y)=93: C@&(x1,Y)=fm%(fr_p AND 7): fr_p=fr_p+1: NEXT
+  FOR X=x1 TO x0 STEP -1: T@&(X,y1)=64: C@&(X,y1)=fm%(fr_p AND 7): fr_p=fr_p+1: NEXT
+  FOR Y=y1-1 TO y0+1 STEP -1: T@&(x0,Y)=93
+  C@&(x0,Y)=fm%(fr_p AND 7): fr_p=fr_p+1: NEXT
+  T@&(x0,y0)=85: T@&(x1,y0)=73: T@&(x0,y1)=74: T@&(x1,y1)=75: RETURN
+@bigtext
+  bi_x=bx: FOR bi_i=1 TO LEN(bt$): bi_l=INSTR(fl$,MID$(bt$,bi_i,1))
+  IF bi_l THEN GOSUB @bigletter: bi_x=bi_x+4: ELSE bi_x=bi_x+2
+  NEXT: RETURN
+@bigletter
+  FOR bi_j=0 TO 8: bi_n=bi_x+MOD(bi_j,3): bi_m=by+INT(bi_j/3)
+  T@&(bi_n,bi_m)=ft%((bi_l-1)*9+bi_j): C@&(bi_n,bi_m)=bc: NEXT: RETURN
+@putc
+  # centred; counts one [highlight] at most
+  tx=INT((40-LEN(tx$)+2*SGN(INSTR(tx$,"[")))/2)
+@puts
+  IF LEN(tx$)=0 THEN RETURN
+  pu_x=tx: pu_col=tc: FOR pu_i=1 TO LEN(tx$): pu_c=ASC(MID$(tx$,pu_i,1))
+  IF pu_c=91 THEN pu_col=th: GOTO @puts_next
+  IF pu_c=93 THEN pu_col=tc: GOTO @puts_next
+  IF pu_c>63 AND pu_c<96 THEN pu_c=pu_c-64
+  T@&(pu_x,ty)=pu_c: C@&(pu_x,ty)=pu_col: pu_x=pu_x+1
+@puts_next
+  NEXT: RETURN
+
+# ---------------- setting up ----------------
+#line 6000
+@tables
+  FOR H=0 TO 255: X=H*6/256: S=INT(X): F=X-S
+  ON S+1 GOSUB @hex0,@hex1,@hex2,@hex3,@hex4,@hex5
+  SG=ABS(CR<.5)+2*ABS(CG<.5)+4*ABS(CB<.5)
+  LT=(H/255)^(1/2.2): E=INT(255*LT+.5): E=(E AND 15)*16+INT(E/16)
+  PT=INT(16*2^(3*LT)+.5)
+  POKE $FFD3070,(d070 AND 63) OR (bank(1)*64)
+  M=INT(256*ABS(CR-.5)+.5): IF M>128 THEN M=128
+  POKE $FFD3100+H,M
+  M=INT(256*ABS(CG-.5)+.5): IF M>128 THEN M=128
+  POKE $FFD3200+H,M
+  M=INT(256*ABS(CB-.5)+.5): IF M>128 THEN M=128
+  POKE $FFD3300+H,M
+  POKE $FFD3070,(d070 AND 63) OR (bank(2)*64)
+  POKE $FFD3100+H,PT: POKE $FFD3200+H,E: POKE $FFD3300+H,SG
+  NEXT H
+  POKE $FFD3070,d070t: RETURN
+@hex0
+  CR=1: CG=F: CB=0: RETURN
+@hex1
+  CR=1-F: CG=1: CB=0: RETURN
+@hex2
+  CR=0: CG=1: CB=F: RETURN
+@hex3
+  CR=0: CG=1-F: CB=1: RETURN
+@hex4
+  CR=F: CG=0: CB=1: RETURN
+@hex5
+  CR=1: CG=0: CB=1-F: RETURN
+@setup
+  DIM fm%(7),qr%(7),qg%(7),qb%(7),hr%(63),hg%(63),hb%(63)
+  DIM sq%(15),ft%(107),gs%(47)
+  DIM lines$(70),lcount(7),lfirst(7),nr%(3),ng%(3),nb%(3),sk(5),sl(5),lens$(2),kv(2)
+  DIM palname$(2),ptext$(5),notes$(3)
+  RESTORE @d_marq: FOR I=0 TO 7: READ fm%(I): NEXT
+  FOR I=0 TO 3: READ nr%(I),ng%(I),nb%(I): NEXT
+  FOR I=0 TO 15: READ sq%(I): NEXT
+  FOR I=0 TO 107: READ V: ft%(I)=sq%(V): NEXT: fl$="UNDERTOWAIGH"
+  FOR I=0 TO 5: READ sk(I),sl(I): NEXT
+  FOR I=0 TO 2: READ kv(I),lens$(I): NEXT
+  FOR I=0 TO 2: READ palname$(I): NEXT
+  FOR I=0 TO 5: READ ptext$(I): NEXT
+  FOR I=0 TO 3: READ notes$(I): NEXT
+  FOR I=0 TO 3: READ mixreg(I): NEXT
+  N=0: FOR P=1 TO 7: READ C: lfirst(P)=N: lcount(P)=C
+  FOR I=1 TO C: READ lines$(N): N=N+1: NEXT I: NEXT P
+  FOR H=0 TO 63: X=H*6/64: S=INT(X): F=X-S
+  ON S+1 GOSUB @hex0,@hex1,@hex2,@hex3,@hex4,@hex5
+  hr%(H)=INT(255*CR): hg%(H)=INT(255*CG): hb%(H)=INT(255*CB): NEXT
+  blank$="": FOR I=1 TO 38: blank$=blank$+" ": NEXT
+  tick=1: hum=1: palette=0: length=0: soft=1: kf=INT(65536*409600/984375+.5)
+  RESTORE @d_glyphs: FOR I=0 TO 47: gs%(I)=PEEK($FF7E408+I): NEXT: glyphf=1
+  FOR I=0 TO 5: READ L
+  FOR J=0 TO 7: POKE $FF7E408+I*8+J,PEEK($FF7E800+L*8+J): NEXT J
+  NEXT I: RETURN
+
+# ---------------- data ----------------
+#line 8000
+@d_marq
+  DATA 4,5,6,7,8,9,10,13
+  DATA 0,230,255,20,40,170,150,40,220,255,30,50
+  DATA 32,126,124,226,123,97,255,236,108,127,225,251,98,252,254,160
+  DATA 5,0,10,5,0,10,9,12,6
+  DATA 13,0,10,5,9,10,5,0,11
+  DATA 7,3,4,5,0,10,13,12,1
+  DATA 7,3,3,7,3,0,13,12,12
+  DATA 7,3,9,7,11,1,5,0,9
+  DATA 3,15,3,0,15,0,0,15,0
+  DATA 6,3,9,5,0,10,9,12,6
+  DATA 5,0,10,5,15,10,7,0,11
+  DATA 6,3,9,13,12,14,5,0,10
+  DATA 3,15,3,0,15,0,12,15,12
+  DATA 6,3,1,5,8,12,9,12,6
+  DATA 5,0,10,7,3,11,5,0,10
+  DATA 0,3,22,6,45,2,75,10,100,4,125,10000
+  DATA 17,"3 MIN ",56,"10 MIN",169,"30 MIN"
+  DATA "BLACK AND WHITE","B&W AND COLOUR WHEEL","COLOUR WHEEL"
+  DATA "NOTHING BUT WHITE AGAINST BLACK."
+  DATA "ANY COLOUR YOU SEE IS YOURS."
+  DATA "WHITE AGAINST BLACK, THEN ONE TURN"
+  DATA "OF THE COLOUR WHEEL, IN TURNS."
+  DATA "EACH COLOUR AGAINST ITS OPPOSITE,"
+  DATA "ROUND AND ROUND THE COLOUR WHEEL."
+  DATA "PURE WHITE AGAINST PURE BLACK"
+  DATA "LIGHT GREY AGAINST DARK GREY"
+  DATA "FULL CONTRAST, FULL COLOUR"
+  DATA "SOFTER CONTRAST, NO SATURATED RED"
+  DATA 2,32,194,224
+  DATA 5
+  DATA "A MATHEMATICS STUDENT AT HARVARD,"
+  DATA "TONY CONRAD READS W. GREY WALTER'S"
+  DATA "BOOK [THE LIVING BRAIN]:"
+  DATA "FLICKERING LIGHT CAN STIR"
+  DATA "THE BRAIN'S OWN RHYTHMS."
+  DATA 5
+  DATA "A FEW YEARS LATER HE TURNS"
+  DATA "A FLICKERING LIGHT FAR DOWN."
+  DATA "WHAT HE SEES IS HALLUCINATORY."
+  DATA "HIS TAPE RECORDER IS RUNNING"
+  DATA "AND KEEPS THE MOMENT."
+  DATA 6
+  DATA "HE IS A MUSICIAN TOO, A VIOLINIST."
+  DATA "COULD FLICKER RATES FORM A SCALE,"
+  DATA "LIKE NOTES?"
+  DATA "HE MAKES A FILM OF NOTHING BUT"
+  DATA "BLACK AND CLEAR FRAMES,"
+  DATA "AND CALLS IT [THE FLICKER]."
+  DATA 6
+  DATA "[THE FLICKER] OPENS IN 1966."
+  DATA "SOME WALK OUT. SOME FEEL SICK."
+  DATA "OTHERS SEE COLOURS, BIRDS, LETTERS,"
+  DATA "A WAGON TRAIN BY A CREEK."
+  DATA "SOME SAY IT WORKS EVEN WITH"
+  DATA "THEIR EYES CLOSED."
+  DATA 8
+  DATA "SIXTY YEARS ON, THIS IS NOT"
+  DATA "HIS FILM. IT IS HIS IDEA,"
+  DATA "BUILT ANEW ON THE [MEGA65]:"
+  DATA "A SCREEN THAT BEATS FIFTY TIMES"
+  DATA "A SECOND, FOUR SID CHIPS, AND"
+  DATA "ARITHMETIC WORKED OUT AS YOU WATCH."
+  DATA ""
+  DATA "[THE REST IS YOU.]"
+  DATA 17
+  DATA "THE WHOLE SCREEN FLASHES 3 TO 25"
+  DATA "TIMES A SECOND FOR UP TO 30 MINUTES."
+  DATA ""
+  DATA "FLASHING LIGHT CAN TRIGGER SEIZURES,"
+  DATA "EVEN IN PEOPLE WHO NEVER HAD ONE."
+  DATA "DO NOT WATCH IF YOU OR YOUR FAMILY"
+  DATA "HAVE A HISTORY OF EPILEPSY."
+  DATA ""
+  DATA "STOP AT ONCE IF YOU FEEL DIZZY, IF"
+  DATA "YOUR SIGHT CHANGES, OR IF ANY MUSCLE"
+  DATA "TWITCHES."
+  DATA ""
+  DATA "WATCH IN A LIT ROOM, SIT WELL BACK,"
+  DATA "AND NEVER WHEN TIRED. CHILDREN ONLY"
+  DATA "WITH AN ADULT IN THE ROOM."
+  DATA ""
+  DATA "ANY KEY STOPS THE FLICKER AT ONCE."
+  DATA 18
+  DATA "AT YOUR OWN RISK"
+  DATA ""
+  DATA "YOU WATCH AND LISTEN AT YOUR OWN"
+  DATA "RISK. TO THE FULL EXTENT THE LAW"
+  DATA "ALLOWS, THE AUTHOR, PSINCO AND"
+  DATA "ANYONE WHO SHARES OR SHOWS THIS"
+  DATA "PROGRAM ACCEPT NO LIABILITY FOR"
+  DATA "PHYSICAL OR MENTAL INJURY, OR FOR"
+  DATA "ANY OTHER HARM OR LOSS, CAUSED BY"
+  DATA "WATCHING OR HEARING IT."
+  DATA ""
+  DATA "THE PROGRAM IS FREE AND COMES AS IT"
+  DATA "IS, WITHOUT WARRANTY OF ANY KIND"
+  DATA "(MIT LICENCE)."
+  DATA ""
+  DATA "TYPING START ON THE NEXT SCREEN"
+  DATA "CONFIRMS THAT YOU HAVE READ THIS"
+  DATA "WARNING AND ACCEPT IT."
+@d_mq0
+  DATA 0,220,255,0,110,230,20,30,160,110,0,200
+  DATA 200,0,160,230,20,60,150,0,180,40,80,220
+@d_mq1
+  DATA 120,0,0,140,0,0,160,0,8,140,0,0,120,0,0,100,0,0,90,0,0,100,0,0
+@d_glyphs
+  DATA 16,19,9,14,3,15

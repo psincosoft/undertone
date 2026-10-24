@@ -1,0 +1,4 @@
+__pycache__/
+build/screens/
+build/*.txt
+build/*.D81
